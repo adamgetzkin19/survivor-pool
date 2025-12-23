@@ -153,7 +153,7 @@ def save_pick_to_sheet(sheet_name, player_name, week_col, team_pick):
 
 # --- 5. APP INTERFACE ---
 with st.sidebar:
-    st.title("🏈 Survivor App")
+    st.title("Survivor App")
     app_mode = st.selectbox("Mode", ["Player Portal", "Admin Access"])
     st.divider()
     pool_type = st.selectbox("Select Pool", ["NFL Survivor", "March Madness (NCAA)"])
@@ -661,3 +661,4 @@ elif app_mode == "Admin Access":
 #         st.write(f"Found Sheets: {all_sheets}")
 
 #         st.write(f"Connection Status: {'✅ Found' if sheet_exists else '❌ Missing'}")
+
