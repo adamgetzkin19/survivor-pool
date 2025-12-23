@@ -21,8 +21,14 @@ def check_hashes(password, hashed_text):
 # --- 3. SHARED FUNCTIONS ---
 @st.cache_resource
 def get_google_spreadsheet():
-    # Ensure 'service_account.json' is in the same folder
-    gc = gspread.service_account(filename='service_account.json')
+    # Try loading from local file (for when you run it on your computer)
+    try:
+        gc = gspread.service_account(filename='service_account.json')
+    except FileNotFoundError:
+        # If file not found, load from Streamlit Cloud Secrets
+        # We must create a secret called "gcp_service_account" in the dashboard later
+        gc = gspread.service_account_from_dict(st.secrets["gcp_service_account"])
+        
     return gc.open("Survivor_Test")
 
 def check_sheet_exists(sheet_name):
@@ -653,4 +659,5 @@ elif app_mode == "Admin Access":
 #         all_sheets = [s.title for s in sh.worksheets()]
 #         st.write(f"Looking for: **{TARGET_SHEET_NAME}**")
 #         st.write(f"Found Sheets: {all_sheets}")
+
 #         st.write(f"Connection Status: {'✅ Found' if sheet_exists else '❌ Missing'}")
