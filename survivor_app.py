@@ -110,7 +110,6 @@ def load_data(sheet_name):
         worksheet = sh.worksheet(sheet_name)
         data = worksheet.get_all_records()
         
-        # FIX: If data is empty list (headers only), manually create DF with columns
         if not data:
             headers = worksheet.row_values(1)
             return pd.DataFrame(columns=headers)
@@ -272,7 +271,6 @@ def render_live_dashboard(sheet_name, api_url, pool_type, api_param, current_use
     
     # SAFETY: Ensure Status column exists before proceeding
     if 'Status' not in df.columns:
-        # If columns exist but no status (rare), or empty df logic failed
         st.error("Waiting for players to join...")
         return
 
@@ -287,7 +285,6 @@ def render_live_dashboard(sheet_name, api_url, pool_type, api_param, current_use
     if active_grading_col and not active_grading_scores.empty:
         st.markdown(f"#### 📊 Distribution for {active_grading_col}")
 
-        # Check if 'Status' column exists and has content
         if 'Status' in df.columns:
             alive_df = df[df['Status'] == 'Alive']
             if active_grading_col in alive_df.columns:
@@ -344,10 +341,8 @@ def render_live_dashboard(sheet_name, api_url, pool_type, api_param, current_use
         if not pick_cols: pick_cols = [c for c in df.columns if "Day" in c or "Week" in c]
 
         base_cols = ['Name', 'Status'] + pick_cols
-        # Safety filter for missing cols
         base_cols = [c for c in base_cols if c in df.columns]
         
-        # Sort only if data exists
         if not df.empty:
             df['Sort_Key'] = df['Status'].apply(lambda x: 1 if x == 'Eliminated' else 0)
             df_sorted = df.sort_values(by=['Sort_Key', 'Name'], ascending=[True, True])
@@ -603,6 +598,22 @@ elif app_mode == "Admin Access":
                     st.success(f"Linked {target_round} to {set_date} (Group: {conf_name})")
                     st.cache_data.clear()
 
+        # --- NEW: EMAIL LIST ---
+        with st.expander("📧 Player Emails (Copy/Paste)", expanded=False):
+            if not df.empty and 'Email' in df.columns:
+                hide_elim = st.checkbox("Hide Eliminated Players from list")
+                
+                email_df = df.copy()
+                if hide_elim:
+                    email_df = email_df[email_df['Status'] != 'Eliminated']
+                
+                unique_emails = [e for e in email_df['Email'].unique() if str(e).strip()]
+                email_str = ", ".join(unique_emails)
+                st.text_area("Copy this list:", value=email_str, height=100)
+                st.caption(f"Total Emails: {len(unique_emails)}")
+            else:
+                st.warning("No email data found.")
+
         st.divider()
 
         col1, col2 = st.columns([2, 1])
@@ -633,7 +644,7 @@ elif app_mode == "Admin Access":
                     df_scores, _, _ = get_sports_data(API_URL, pool_type, admin_api_param, group_id=admin_group_id)
                 else: st.error("❌ No date/week set for this round.")
 
-                # SAFE SORTING: Check if rows exist before sorting
+                # SAFE SORTING
                 if not df.empty:
                     df['Sort_Key'] = df['Status'].apply(lambda x: 1 if x == 'Eliminated' else 0)
                     display_df = df.sort_values(by=['Sort_Key', 'Name']).drop(columns=['Security_Hash', 'Email', 'Sort_Key'], errors='ignore')
