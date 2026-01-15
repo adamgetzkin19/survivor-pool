@@ -269,7 +269,7 @@ def render_live_dashboard(sheet_name, api_url, pool_type, api_param, current_use
         st.warning("No data found.")
         return
     
-    # SAFETY: Ensure Status column exists before proceeding
+    # SAFETY: Ensure Status column exists
     if 'Status' not in df.columns:
         st.error("Waiting for players to join...")
         return
@@ -281,57 +281,61 @@ def render_live_dashboard(sheet_name, api_url, pool_type, api_param, current_use
         active_grading_col = pick_col
         active_grading_scores = df_scores_pick
 
-    # --- A. PICK DISTRIBUTION ---
+    # --- A. PICK DISTRIBUTION & STATS ---
     if active_grading_col and not active_grading_scores.empty:
         st.markdown(f"#### 📊 Distribution for {active_grading_col}")
 
-        if 'Status' in df.columns:
-            alive_df = df[df['Status'] == 'Alive']
-            if active_grading_col in alive_df.columns:
-                valid_picks = alive_df[active_grading_col]
-                valid_picks = valid_picks[valid_picks != ""]
+        # LOGIC FIX: Filter df to find ANYONE with a pick in this column,
+        # ignoring their global 'Status' which might already be 'Eliminated'.
+        if active_grading_col in df.columns:
+            # 1. Get everyone who made a pick (non-empty strings)
+            valid_picks_series = df[df[active_grading_col].astype(str).str.strip() != ""][active_grading_col]
+            
+            # 2. Count distinct teams picked
+            dist_counts = valid_picks_series.value_counts().reset_index()
+            dist_counts.columns = ["Team", "Count"]
 
-                dist_counts = valid_picks.value_counts().reset_index()
-                dist_counts.columns = ["Team", "Count"]
+            round_eliminated = 0
+            round_safe = 0
+            round_pending = 0
 
-                round_eliminated = 0
-                round_safe = 0
-                round_pending = 0
+            # 3. Calculate Stats based ONLY on the game result for that pick
+            for team, count in zip(dist_counts['Team'], dist_counts['Count']):
+                match = active_grading_scores[active_grading_scores['Team A'].str.contains(team, case=False, regex=False) |
+                                    active_grading_scores['Team B'].str.contains(team, case=False, regex=False)]
+                if not match.empty:
+                    game = match.iloc[0]
+                    if game['Status'] == 'Final':
+                        if team.lower() in game['Winner'].lower(): round_safe += count
+                        elif game['Winner'] == "Tie": round_safe += count
+                        else: round_eliminated += count # Loss = Eliminated Today
+                    else: round_pending += count # Game in progress/scheduled
+                else: 
+                    # If game not found in score data, assume pending (or bye week/error)
+                    round_pending += count
 
-                for team, count in zip(dist_counts['Team'], dist_counts['Count']):
-                    match = active_grading_scores[active_grading_scores['Team A'].str.contains(team, case=False, regex=False) |
-                                        active_grading_scores['Team B'].str.contains(team, case=False, regex=False)]
-                    if not match.empty:
-                        game = match.iloc[0]
-                        if game['Status'] == 'Final':
-                            if team.lower() in game['Winner'].lower(): round_safe += count
-                            elif game['Winner'] == "Tie": round_safe += count
-                            else: round_eliminated += count
-                        else: round_pending += count
-                    else: round_pending += count
+            m1, m2, m3 = st.columns(3)
+            m1.metric("✅ Safe / Pending", f"{round_safe + round_pending}")
+            m2.metric("💀 Eliminated Today", f"{round_eliminated}")
+            m3.metric("📅 Total Picks", f"{valid_picks_series.count()}")
 
-                m1, m2, m3 = st.columns(3)
-                m1.metric("✅ Safe / Pending", f"{round_safe + round_pending}")
-                m2.metric("💀 Eliminated Today", f"{round_eliminated}")
-                m3.metric("📅 Total Picks", f"{valid_picks.count()}")
+            if not dist_counts.empty:
+                def get_team_status_text(t_name):
+                    m = active_grading_scores[active_grading_scores['Team A'].str.contains(t_name, case=False, regex=False) |
+                                              active_grading_scores['Team B'].str.contains(t_name, case=False, regex=False)]
+                    if not m.empty:
+                        g = m.iloc[0]
+                        if g['Status'] == 'Final':
+                            if t_name.lower() in g['Winner'].lower(): return "✅ Won"
+                            return "❌ Lost"
+                        return f"⏳ {g['Score']}"
+                    return "❓"
 
-                if not dist_counts.empty:
-                    def get_team_status_text(t_name):
-                        m = active_grading_scores[active_grading_scores['Team A'].str.contains(t_name, case=False, regex=False) |
-                                                  active_grading_scores['Team B'].str.contains(t_name, case=False, regex=False)]
-                        if not m.empty:
-                            g = m.iloc[0]
-                            if g['Status'] == 'Final':
-                                if t_name.lower() in g['Winner'].lower(): return "✅ Won"
-                                return "❌ Lost"
-                            return f"⏳ {g['Score']}"
-                        return "❓"
-
-                    dist_counts['Status'] = dist_counts['Team'].apply(get_team_status_text)
-                    def highlight_losing_teams(row):
-                        if "❌ Lost" in str(row['Status']): return ['background-color: #ffcccc'] * len(row)
-                        return [''] * len(row)
-                    st.dataframe(dist_counts.style.apply(highlight_losing_teams, axis=1), use_container_width=True, hide_index=True)
+                dist_counts['Status'] = dist_counts['Team'].apply(get_team_status_text)
+                def highlight_losing_teams(row):
+                    if "❌ Lost" in str(row['Status']): return ['background-color: #ffcccc'] * len(row)
+                    return [''] * len(row)
+                st.dataframe(dist_counts.style.apply(highlight_losing_teams, axis=1), use_container_width=True, hide_index=True)
 
     st.divider()
 
@@ -351,11 +355,10 @@ def render_live_dashboard(sheet_name, api_url, pool_type, api_param, current_use
             if not active_grading_scores.empty and active_grading_col and active_grading_col in display_df.columns:
                 statuses = []
                 for _, row in display_df.iterrows():
-                    if row['Status'] == 'Eliminated':
-                        statuses.append("ELIMINATED")
-                        continue
-
+                    # Visual status in table
+                    current_global_status = row['Status']
                     pick = str(row.get(active_grading_col, "")).strip()
+                    
                     match = active_grading_scores[active_grading_scores['Team A'].str.contains(pick, case=False, regex=False) |
                                         active_grading_scores['Team B'].str.contains(pick, case=False, regex=False)]
 
@@ -367,13 +370,23 @@ def render_live_dashboard(sheet_name, api_url, pool_type, api_param, current_use
                             elif game['Winner'] == "Tie": res_text = "TIE"
                             else:
                                 res_text = "ELIMINATED"
-                                if row['Name'] == current_user and row['Status'] == 'Alive':
+                                # TRIGGER AUTO-ELIMINATION IF NEEDED
+                                if row['Name'] == current_user and current_global_status == 'Alive':
                                     update_player_status(sheet_name, row['Name'], "Eliminated")
                                     st.rerun()
                         else: res_text = f"In Progress ({game['Score']})"
                     elif pick == "": res_text = "No Pick"
                     else: res_text = "Unknown"
-                    statuses.append(res_text)
+                    
+                    # If they were already eliminated previously, override text to show that
+                    if current_global_status == 'Eliminated' and res_text != "ELIMINATED":
+                         # They are out globally, but maybe their pick today won? 
+                         # Usually we just show 'ELIMINATED' but user might want to see pick result.
+                         # We'll stick to showing the result if they have a pick, otherwise ELIMINATED.
+                         if pick == "": statuses.append("ELIMINATED")
+                         else: statuses.append(f"{res_text} (Out)")
+                    else:
+                        statuses.append(res_text)
 
                 display_df['Latest Result'] = statuses
             else:
