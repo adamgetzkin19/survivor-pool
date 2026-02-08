@@ -991,7 +991,7 @@ def main():
             st.header("🔐 Admin Authorization")
             admin_pass = st.text_input("Admin Password", type="password")
     
-        if admin_pass == "admin123":
+        if admin_pass == st.secrets["admin"]["password"]:
             st.header(f"🛠️ Admin Dashboard: {pool_type}")
             
             # --- 1. CONFIG & CHECKS ---
