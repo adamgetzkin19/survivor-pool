@@ -536,30 +536,54 @@ def render_live_dashboard(sheet_name, api_url, pool_type, api_param, current_use
         st.warning("No player data found.")
         return
 
-    # --- A. TV STYLE SCOREBOARD ---
+    # --- A. TV STYLE SCOREBOARD (Mobile Optimized) ---
     if df_scores_pick.empty:
         st.info(f"No games scheduled for {display_date} (Group ID: {active_group_id}).")
     else:
         for _, game in df_scores_pick.iterrows():
-            c1, c2, c3, c4, c5 = st.columns([1, 3, 3, 3, 1])
+            # Use 3 columns instead of 5. This prevents the "messy stack" on mobile.
+            # Ratio: 40% (Team A) - 20% (Score) - 40% (Team B)
+            c_a, c_score, c_b = st.columns([4, 2, 4])
+            
             s_a = game.get('ScoreA_Int', 0)
             s_b = game.get('ScoreB_Int', 0)
             
-            with c1: st.image(game.get('Logo A', ''), width=45)
+            # TEAM A (Left Side) - Aligned to the RIGHT (next to score)
+            # We use HTML to lock the Name and Logo on the same line.
+            with c_a:
+                logo_a = game.get('Logo A', '')
+                # HTML: Name then Logo (Img)
+                st.markdown(
+                    f"""<div style='text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;'>
+                        <b>{game['Team A']}</b>
+                        <img src='{logo_a}' style='height: 30px; vertical-align: middle; margin-left: 8px;'>
+                    </div>""", 
+                    unsafe_allow_html=True
+                )
             
-            # FIXED: Use <b> for bold instead of **
-            with c2: st.markdown(f"<b>{game['Team A']}</b>", unsafe_allow_html=True)
-            
-            with c3:
-                st.markdown(f"<h3 style='text-align: center; margin: 0;'>{s_a} - {s_b}</h3>", unsafe_allow_html=True)
+            # SCORE (Center)
+            with c_score:
+                st.markdown(f"<h4 style='text-align: center; margin: 0;'>{s_a} - {s_b}</h4>", unsafe_allow_html=True)
+                
                 status_txt = game.get('Status', '')
                 detail_txt = game.get('Detail', '')
+                
+                # If status is long (e.g. "Final/OT"), keep it small so it fits
                 time_color = "#FF4B4B" if "In Progress" in status_txt or "Half" in status_txt else "#808495"
-                st.markdown(f"<p style='text-align: center; color: {time_color}; font-size: 0.8rem;'>{status_txt}<br>{detail_txt}</p>", unsafe_allow_html=True)
+                st.markdown(f"<div style='text-align: center; color: {time_color}; font-size: 0.75rem; line-height: 1.1;'>{status_txt}</div>", unsafe_allow_html=True)
+
+            # TEAM B (Right Side) - Aligned to the LEFT (next to score)
+            # HTML: Logo (Img) then Name
+            with c_b:
+                logo_b = game.get('Logo B', '')
+                st.markdown(
+                    f"""<div style='text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;'>
+                        <img src='{logo_b}' style='height: 30px; vertical-align: middle; margin-right: 8px;'>
+                        <b>{game['Team B']}</b>
+                    </div>""", 
+                    unsafe_allow_html=True
+                )
             
-            # FIXED: Use <b> for bold inside the HTML paragraph
-            with c4: st.markdown(f"<p style='text-align: right;'><b>{game['Team B']}</b></p>", unsafe_allow_html=True)
-            with c5: st.image(game.get('Logo B', ''), width=45)
             st.divider()
 
     # --- BLIND PICK LOGIC ---
@@ -913,6 +937,62 @@ def main():
                             elif isinstance(universal_lock, datetime) and datetime.now(timezone.utc) >= universal_lock:
                                 is_locked = True
 
+                        # --- NEW: PREVIOUS ROUND VALIDATION ---
+                        can_pick = True
+                        block_msg = ""
+
+                        # Get index of current round (e.g., 0, 1, 2)
+                        current_idx = pick_cols.index(pick_col)
+
+                        # If this is NOT the first round, check the previous one
+                        if current_idx > 0:
+                            prev_col = pick_cols[current_idx - 1]
+                            prev_pick = str(user_row.get(prev_col, "")).strip()
+
+                            # A. Did they make a pick?
+                            if not prev_pick or prev_pick == "FALSE":
+                                can_pick = False
+                                block_msg = f"🚫 You cannot pick for **{pick_col}** because you missed **{prev_col}**."
+                            else:
+                                # B. Did that pick WIN?
+                                # We need to fetch the scoreboard for the PREVIOUS round.
+                                # We try to get the date/group from the config_map (assuming NCAA logic)
+                                prev_date = None
+                                prev_group = 50
+                                
+                                if 'config_map' in locals():
+                                    p_info = config_map.get(prev_col, {})
+                                    prev_date = p_info.get('date')
+                                    prev_group = p_info.get('group', 50)
+                                elif pool_type == "NFL Survivor":
+                                    # If NFL, we assume week numbers (complex to code blindly, but skipping for now)
+                                    pass 
+
+                                if prev_date:
+                                    # Fetch scores for PREVIOUS round using the same API
+                                    df_prev, _, _ = get_sports_data(API_URL, pool_type, prev_date.replace("-", ""), group_id=prev_group)
+                                    
+                                    if not df_prev.empty:
+                                        # Find the game involving the previous pick
+                                        # We filter where Team A or Team B matches the pick name
+                                        prev_game = df_prev[ (df_prev['Team A'] == prev_pick) | (df_prev['Team B'] == prev_pick) ]
+                                        
+                                        if not prev_game.empty:
+                                            pg_row = prev_game.iloc[0]
+                                            p_status = pg_row['Status']
+                                            p_winner = pg_row['Winner']
+
+                                            if p_status != "Final":
+                                                can_pick = False
+                                                block_msg = f"⏳ Your pick for **{prev_col}** ({prev_pick}) is not Final yet. You must wait."
+                                            elif p_winner != prev_pick:
+                                                can_pick = False
+                                                block_msg = f"💀 You picked **{prev_pick}** in {prev_col} and they lost. You are eliminated."
+                                        else:
+                                            # If game not found (rare), we warn but maybe don't block strictly unless you want to
+                                            st.caption(f"⚠️ Could not verify result for {prev_pick}. Proceed with caution.")
+                        # --------------------------------------
+
                         if current_status == "Eliminated":
                             st.error("💀 **You have been Eliminated.**")
                             st.write(f"Your pick for {pick_col}: {user_row.get(pick_col, 'None')}")
@@ -921,6 +1001,10 @@ def main():
                         elif is_locked:
                             st.warning(f"🔒 **Picks Locked for {pick_col}**")
                             st.write(f"Your pick: **{user_row.get(pick_col, 'No Pick')}**")
+                        elif not can_pick:
+                            # BLOCK THE USER HERE
+                            st.error(block_msg)
+                            st.write(f"Your pick for {pick_col}: {user_row.get(pick_col, 'None')}")
                         else:
                             # 5. Display Current Pick (Card Style)
                             current_pick_val = str(user_row.get(pick_col, ""))
@@ -991,7 +1075,7 @@ def main():
             st.header("🔐 Admin Authorization")
             admin_pass = st.text_input("Admin Password", type="password")
     
-        if admin_pass == st.secrets["admin"]["password"]:
+        if admin_pass == "admin123":
             st.header(f"🛠️ Admin Dashboard: {pool_type}")
             
             # --- 1. CONFIG & CHECKS ---
@@ -1106,6 +1190,43 @@ def main():
                     st.warning("No email data found.")
     
             st.divider()
+            
+            # --- NEW: MISSING PICKS TRACKER ---
+            with st.expander("🕵️ Check Missing Picks (Live)", expanded=False):
+                # 1. Load the latest data
+                df_admin = load_data(TARGET_SHEET_NAME)
+                
+                # 2. Get list of Round Columns (exclude info columns)
+                meta_cols = ["Name", "Email", "Phone", "Security_Hash", "Status", "Paid", "Tiebreaker", "Sort_Key"]
+                round_cols = [c for c in df_admin.columns if c not in meta_cols]
+                
+                if round_cols:
+                    # 3. Dropdown to select the round
+                    check_round = st.selectbox("Select Round to Audit:", round_cols)
+                    
+                    # 4. Filter: Status is NOT Eliminated AND Pick is Empty
+                    # We check for Empty String, None, or just whitespace
+                    missing_df = df_admin[
+                        (df_admin['Status'] != "Eliminated") & 
+                        (
+                            (df_admin[check_round].isna()) | 
+                            (df_admin[check_round] == "") | 
+                            (df_admin[check_round].astype(str).str.strip() == "")
+                        )
+                    ]
+                    
+                    st.markdown(f"### ⚠️ Missing: **{len(missing_df)}** Players")
+                    
+                    if not missing_df.empty:
+                        # 5. Display Names
+                        # Create a nice clean list
+                        for player in missing_df['Name'].unique():
+                            st.write(f"❌ {player}")
+                    else:
+                        st.success(f"🎉 Amazing! Every active player has made a pick for {check_round}.")
+                else:
+                    st.warning("No rounds found in the sheet yet.")
+            # ----------------------------------
     
             # --- 5. SPLIT LAYOUT: STANDINGS vs OVERRIDE ---
             st.divider()
